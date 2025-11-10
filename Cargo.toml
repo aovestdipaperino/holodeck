@@ -1,0 +1,29 @@
+[package]
+name = "holo-deck"
+version = "0.1.0"
+edition = "2024"
+authors = ["Enzo Lombardi <enzinolv@gmail.com>"]
+description = "A simple HTTP file server with built-in reverse SSH tunneling for easy external access"
+documentation = "https://docs.rs/holo-deck"
+readme = "README.md"
+homepage = "https://github.com/aovestdipaperino/holodeck"
+repository = "https://github.com/aovestdipaperino/holodeck"
+license = "MIT OR Apache-2.0"
+keywords = ["http", "file-server", "ssh", "tunnel", "localhost"]
+categories = ["command-line-utilities", "network-programming", "web-programming::http-server"]
+exclude = ["shared_files/"]
+
+[[bin]]
+name = "holo-deck"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reverse-ssh = "0.1.1"
