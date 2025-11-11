@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2025-11-11
+
+### Fixed
+- Usage instructions now display after SSH tunnel is established, showing the external URL when tunneling is active
+- Corrected tunnel status frame alignment by removing extra space in format string
+
 ## [0.1.0] - 2025-11-10
 
 ### Added
@@ -31,4 +37,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local-only HTTP server binding (127.0.0.1)
 - SSH key authentication for tunnel connections
 
-[0.1.0]: https://github.com/enzolombardi/holo-deck/releases/tag/v0.1.0
+[0.1.1]: https://github.com/aovestdipaperino/holodeck/releases/tag/v0.1.1
+[0.1.0]: https://github.com/aovestdipaperino/holodeck/releases/tag/v0.1.0
