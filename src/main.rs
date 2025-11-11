@@ -41,23 +41,33 @@ async fn main() -> anyhow::Result<()> {
 
     println!("HTTP File Server running on http://{}", local_addr);
     println!("Shared directory: {}", shared_path.display());
-    println!("\nUsage:");
-    println!(
-        "  GET file:  curl http://localhost:{}/<filename>",
-        local_port
-    );
-    println!(
-        "  POST file: curl -X POST --data-binary @<file> http://localhost:{}/<filename>",
-        local_port
-    );
-    println!("  List files: curl http://localhost:{}/", local_port);
 
     // Spawn reverse SSH tunnel if configuration is provided
-    if let Some(_tunnel_handle) = setup_reverse_tunnel(local_port).await {
+    if let Some(external_url) = setup_reverse_tunnel(local_port).await {
+        // Wait a moment for the tunnel to be fully established
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         println!("\n=== Reverse SSH Tunnel Active ===");
         println!("Your server is now accessible externally!");
-        // tunnel_handle is already spawned, just keep the handle
+
+        // Print usage with external URL
+        println!("\nUsage:");
+        println!("  GET file:  curl {}/<filename>", external_url);
+        println!("  POST file: curl -X POST --data-binary @<file> {}/<filename>", external_url);
+        println!("  List files: curl {}/", external_url);
     } else {
+        // Print usage with local URL
+        println!("\nUsage:");
+        println!(
+            "  GET file:  curl http://localhost:{}/<filename>",
+            local_port
+        );
+        println!(
+            "  POST file: curl -X POST --data-binary @<file> http://localhost:{}/<filename>",
+            local_port
+        );
+        println!("  List files: curl http://localhost:{}/", local_port);
+
         println!("\n=== Running in Local Mode ===");
         println!("To enable external access, set these environment variables:");
         println!("  SSH_SERVER   - SSH server address (e.g., ssh.localhost.run)");
@@ -86,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn setup_reverse_tunnel(local_port: u16) -> Option<tokio::task::JoinHandle<()>> {
+async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
     // Check if SSH server is configured
     let server_addr = env::var("SSH_SERVER").ok()?;
 
@@ -124,9 +134,12 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<tokio::task::JoinHandle
         config.remote_port, local_port
     );
 
-    let handle = tokio::spawn(async move {
+    // Create a channel to receive the URL from the spawned task
+    let (url_tx, mut url_rx) = tokio::sync::mpsc::channel::<String>(1);
+
+    tokio::spawn(async move {
         let mut client = ReverseSshClient::new(config);
-        let mut url_printed = false;
+        let mut url_sent = false;
         match client
             .run_with_message_handler(move |message| {
                 // Extract and display the tunnel URL prominently
@@ -145,13 +158,14 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<tokio::task::JoinHandle
                                     .unwrap_or(url_part.len());
                                 let url = &url_part[..url_end];
 
-                                if !url_printed {
+                                if !url_sent {
                                     println!("\n╔════════════════════════════════════════════════════════════════╗");
                                     println!("║                    TUNNEL ACTIVE                               ║");
                                     println!("╠════════════════════════════════════════════════════════════════╣");
-                                    println!("║  External URL: {:<48} ║", url);
+                                    println!("║  External URL: {:<48}║", url);
                                     println!("╚════════════════════════════════════════════════════════════════╝\n");
-                                    url_printed = true;
+                                    let _ = url_tx.try_send(url.to_string());
+                                    url_sent = true;
                                 }
                             }
                         }
@@ -165,7 +179,14 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<tokio::task::JoinHandle
         }
     });
 
-    Some(handle)
+    // Wait for the URL with a timeout
+    tokio::select! {
+        result = url_rx.recv() => result,
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
+            eprintln!("Warning: Timed out waiting for tunnel URL");
+            None
+        }
+    }
 }
 
 async fn handle_request(req: Request<Incoming>) -> Result<Response<BoxBody>, hyper::Error> {

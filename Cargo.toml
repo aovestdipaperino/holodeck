@@ -1,6 +1,6 @@
 [package]
 name = "holo-deck"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Enzo Lombardi <enzinolv@gmail.com>"]
 description = "A simple HTTP file server with built-in reverse SSH tunneling for easy external access"
