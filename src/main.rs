@@ -4,6 +4,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use hyper_util::rt::TokioIo;
+use indicatif::{ProgressBar, ProgressStyle};
 use reverse_ssh::{ReverseSshClient, ReverseSshConfig};
 use std::env;
 use std::path::PathBuf;
@@ -249,9 +250,21 @@ async fn get_file(path: &str) -> Result<Response<BoxBody>, hyper::Error> {
 
     let file_path = PathBuf::from(SHARED_DIR).join(filename);
 
+    // Create progress spinner
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+    );
+    spinner.set_message(format!("Sending file '{}'", filename));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     match fs::read(&file_path).await {
         Ok(contents) => {
-            println!("GET: Served file '{}'", filename);
+            let size = contents.len();
+            spinner.finish_with_message(format!("GET: Served file '{}' ({} bytes)", filename, size));
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/octet-stream")
@@ -263,6 +276,7 @@ async fn get_file(path: &str) -> Result<Response<BoxBody>, hyper::Error> {
                 .unwrap())
         }
         Err(_) => {
+            spinner.finish_and_clear();
             eprintln!("GET: File '{}' not found", filename);
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -292,13 +306,24 @@ async fn post_file(req: Request<Incoming>, path: &str) -> Result<Response<BoxBod
 
     let file_path = PathBuf::from(SHARED_DIR).join(filename);
 
+    // Create progress spinner
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+    );
+    spinner.set_message(format!("Receiving file '{}'", filename));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     // Collect the request body
     let body = req.collect().await?.to_bytes();
 
     match fs::File::create(&file_path).await {
         Ok(mut file) => match file.write_all(&body).await {
             Ok(_) => {
-                println!("POST: Received file '{}' ({} bytes)", filename, body.len());
+                spinner.finish_with_message(format!("POST: Received file '{}' ({} bytes)", filename, body.len()));
                 Ok(Response::builder()
                     .status(StatusCode::CREATED)
                     .body(full(format!(
@@ -309,6 +334,7 @@ async fn post_file(req: Request<Incoming>, path: &str) -> Result<Response<BoxBod
                     .unwrap())
             }
             Err(e) => {
+                spinner.finish_and_clear();
                 eprintln!("POST: Error writing file '{}': {}", filename, e);
                 Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -317,6 +343,7 @@ async fn post_file(req: Request<Incoming>, path: &str) -> Result<Response<BoxBod
             }
         },
         Err(e) => {
+            spinner.finish_and_clear();
             eprintln!("POST: Error creating file '{}': {}", filename, e);
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
