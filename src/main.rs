@@ -16,6 +16,43 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 const SHARED_DIR: &str = ".";
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TunnelProvider {
+    Pico,
+    LocalhostRun,
+}
+
+impl TunnelProvider {
+    fn from_env() -> Option<Self> {
+        match env::var("TUNNEL_PROVIDER").ok()?.to_lowercase().as_str() {
+            "pico" | "pico.sh" | "tuns" | "tuns.sh" => Some(TunnelProvider::Pico),
+            "localhost.run" | "localhostrun" | "lhr" => Some(TunnelProvider::LocalhostRun),
+            _ => None,
+        }
+    }
+
+    fn default_server(&self) -> &'static str {
+        match self {
+            TunnelProvider::Pico => "tuns.sh",
+            TunnelProvider::LocalhostRun => "ssh.localhost.run",
+        }
+    }
+
+    fn default_username(&self) -> Option<&'static str> {
+        match self {
+            TunnelProvider::Pico => None, // User must provide their pico username
+            TunnelProvider::LocalhostRun => Some("localhost"),
+        }
+    }
+
+    fn url_patterns(&self) -> &'static [&'static str] {
+        match self {
+            TunnelProvider::Pico => &[".tuns.sh"],
+            TunnelProvider::LocalhostRun => &[".lhr.life", ".lhr.rocks", ".localhost.run"],
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing only if RUST_LOG is set
@@ -70,15 +107,21 @@ async fn main() -> anyhow::Result<()> {
         println!("  List files: curl http://localhost:{}/", local_port);
 
         println!("\n=== Running in Local Mode ===");
-        println!("To enable external access, set these environment variables:");
-        println!("  SSH_SERVER   - SSH server address (e.g., ssh.localhost.run)");
-        println!("  SSH_USER     - SSH username (optional, defaults to 'localhost')");
-        println!("  SSH_PORT     - SSH server port (optional, defaults to 22)");
-        println!("  SSH_KEY_PATH - Path to SSH private key (required for key auth)");
-        println!("  SSH_PASSWORD - SSH password (alternative to key auth)");
-        println!("  REMOTE_PORT  - Remote port to listen on (optional, defaults to 80)");
+        println!("To enable external access via pico.sh tuns (default):");
+        println!("  SSH_KEY_PATH=~/.ssh/id_ed25519 SSH_USER=<your-pico-username> cargo run");
+        println!("\nEnvironment variables:");
+        println!("  TUNNEL_PROVIDER - Tunnel provider: 'pico' (default) or 'localhost.run'");
+        println!("  SSH_USER        - SSH username (required for pico.sh, optional for localhost.run)");
+        println!("  SSH_KEY_PATH    - Path to SSH private key");
+        println!("  SSH_SERVER      - SSH server address (defaults based on provider)");
+        println!("  SSH_PORT        - SSH server port (optional, defaults to 22)");
+        println!("  SSH_PASSWORD    - SSH password (alternative to key auth)");
+        println!("  REMOTE_PORT     - Remote port to listen on (optional, defaults to 80)");
+        println!("  TUNNEL_NAME     - Tunnel subdomain name for pico.sh (optional)");
+        println!("\nExample with pico.sh tuns:");
+        println!("  SSH_KEY_PATH=~/.ssh/id_ed25519 SSH_USER=myuser cargo run");
         println!("\nExample with localhost.run:");
-        println!("  SSH_SERVER=ssh.localhost.run SSH_KEY_PATH=~/.ssh/id_ed25519 cargo run");
+        println!("  TUNNEL_PROVIDER=localhost.run SSH_KEY_PATH=~/.ssh/id_ed25519 cargo run");
     }
 
     // Run HTTP server
@@ -98,11 +141,46 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
-    // Check if SSH server is configured
-    let server_addr = env::var("SSH_SERVER").ok()?;
+    // Determine the tunnel provider - default to Pico if SSH_KEY_PATH is set, otherwise check explicit config
+    let provider = TunnelProvider::from_env().or_else(|| {
+        // Default to Pico if we have an SSH key, otherwise require explicit configuration
+        if env::var("SSH_KEY_PATH").is_ok() || env::var("SSH_SERVER").is_ok() {
+            Some(TunnelProvider::Pico)
+        } else {
+            None
+        }
+    })?;
 
-    // Get SSH key path from environment variable only
+    // Get SSH key path from environment variable
     let key_path = env::var("SSH_KEY_PATH").ok();
+
+    // Get username - required for Pico, optional for localhost.run
+    let username = env::var("SSH_USER").ok().or_else(|| {
+        provider.default_username().map(String::from)
+    });
+
+    let username = match username {
+        Some(u) => u,
+        None => {
+            eprintln!("Error: SSH_USER is required for pico.sh tuns");
+            return None;
+        }
+    };
+
+    // Get tunnel name for pico.sh (subdomain prefix)
+    let tunnel_name = env::var("TUNNEL_NAME").ok();
+
+    // Build server address - for pico.sh, we might need to include the tunnel name in the remote binding
+    let server_addr = env::var("SSH_SERVER")
+        .ok()
+        .unwrap_or_else(|| provider.default_server().to_string());
+
+    // For pico.sh, the remote_port format is different - it uses "name:port" syntax
+    // The reverse-ssh crate may need adjustment, but we'll set it up as standard for now
+    let remote_port: u32 = env::var("REMOTE_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(80);
 
     let config = ReverseSshConfig {
         server_addr: server_addr.clone(),
@@ -110,25 +188,27 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(22),
-        username: env::var("SSH_USER").unwrap_or_else(|_| "localhost".to_string()),
+        username: username.clone(),
         key_path: key_path.clone(),
         password: env::var("SSH_PASSWORD").ok(),
-        remote_port: env::var("REMOTE_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(80),
+        remote_port,
         local_addr: "127.0.0.1".to_string(),
         local_port,
     };
 
+    println!("\nTunnel provider: {:?}", provider);
     println!(
-        "\nConnecting to SSH server: {}:{}",
+        "Connecting to SSH server: {}:{}",
         config.server_addr, config.server_port
     );
+    println!("Username: {}", username);
     if let Some(ref key) = key_path {
         println!("Using SSH key: {}", key);
     } else {
         println!("Using password authentication");
+    }
+    if let Some(ref name) = tunnel_name {
+        println!("Tunnel name: {}", name);
     }
     println!(
         "Forwarding remote port {} to local port {}",
@@ -137,6 +217,9 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
 
     // Create a channel to receive the URL from the spawned task
     let (url_tx, mut url_rx) = tokio::sync::mpsc::channel::<String>(1);
+
+    // Clone URL patterns for use in the spawned task
+    let url_patterns: Vec<&'static str> = provider.url_patterns().to_vec();
 
     tokio::spawn(async move {
         let mut client = ReverseSshClient::new(config);
@@ -147,10 +230,11 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
                 for line in message.lines() {
                     let trimmed = line.trim();
                     if !trimmed.is_empty() {
-                        // Check if this line contains the tunnel URL
-                        if (trimmed.contains("http://") || trimmed.contains("https://"))
-                           && (trimmed.contains(".lhr.life") || trimmed.contains(".lhr.rocks") || trimmed.contains(".localhost.run"))
-                        {
+                        // Check if this line contains a tunnel URL matching our provider's patterns
+                        let has_url = trimmed.contains("http://") || trimmed.contains("https://");
+                        let matches_pattern = url_patterns.iter().any(|p| trimmed.contains(p));
+
+                        if has_url && matches_pattern {
                             // Extract the URL
                             if let Some(url_start) = trimmed.find("http") {
                                 let url_part = &trimmed[url_start..];
