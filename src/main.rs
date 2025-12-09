@@ -168,15 +168,18 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
     };
 
     // Get tunnel name for pico.sh (subdomain prefix)
+    // For pico.sh: TUNNEL_NAME becomes the bind_address (e.g., "dev" -> "user-dev.tuns.sh")
+    // For localhost.run: bind_address should be empty (server assigns random subdomain)
     let tunnel_name = env::var("TUNNEL_NAME").ok();
+    let bind_address = match provider {
+        TunnelProvider::Pico => tunnel_name.clone().unwrap_or_default(),
+        TunnelProvider::LocalhostRun => String::new(),
+    };
 
-    // Build server address - for pico.sh, we might need to include the tunnel name in the remote binding
     let server_addr = env::var("SSH_SERVER")
         .ok()
         .unwrap_or_else(|| provider.default_server().to_string());
 
-    // For pico.sh, the remote_port format is different - it uses "name:port" syntax
-    // The reverse-ssh crate may need adjustment, but we'll set it up as standard for now
     let remote_port: u32 = env::var("REMOTE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -191,6 +194,7 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
         username: username.clone(),
         key_path: key_path.clone(),
         password: env::var("SSH_PASSWORD").ok(),
+        bind_address: bind_address.clone(),
         remote_port,
         local_addr: "127.0.0.1".to_string(),
         local_port,
@@ -210,10 +214,17 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
     if let Some(ref name) = tunnel_name {
         println!("Tunnel name: {}", name);
     }
-    println!(
-        "Forwarding remote port {} to local port {}",
-        config.remote_port, local_port
-    );
+    if !bind_address.is_empty() {
+        println!(
+            "Forwarding {}:{} to local port {}",
+            bind_address, config.remote_port, local_port
+        );
+    } else {
+        println!(
+            "Forwarding remote port {} to local port {}",
+            config.remote_port, local_port
+        );
+    }
 
     // Create a channel to receive the URL from the spawned task
     let (url_tx, mut url_rx) = tokio::sync::mpsc::channel::<String>(1);
@@ -241,7 +252,20 @@ async fn setup_reverse_tunnel(local_port: u16) -> Option<String> {
                                 // Find the end of the URL
                                 let url_end = url_part.find(|c: char| c.is_whitespace() || c == ',' || c == ';')
                                     .unwrap_or(url_part.len());
-                                let url = &url_part[..url_end];
+                                let full_url = &url_part[..url_end];
+
+                                // Strip path from URL, keeping only scheme + domain
+                                // e.g., https://foo.tuns.sh/_sish/console?... -> https://foo.tuns.sh
+                                let url = if let Some(scheme_end) = full_url.find("://") {
+                                    let after_scheme = &full_url[scheme_end + 3..];
+                                    if let Some(path_start) = after_scheme.find('/') {
+                                        &full_url[..scheme_end + 3 + path_start]
+                                    } else {
+                                        full_url
+                                    }
+                                } else {
+                                    full_url
+                                };
 
                                 if !url_sent {
                                     println!("\n╔════════════════════════════════════════════════════════════════╗");
